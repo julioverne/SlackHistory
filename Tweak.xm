@@ -4,6 +4,11 @@
 
 #define NSLog(...)
 
+@interface NSUserDefaults ()
+- (id)objectForKey:(NSString *)key inDomain:(NSString *)domain;
+- (void)setObject:(id)value forKey:(NSString *)key inDomain:(NSString *)domain;
+@end
+
 @interface SLHTTPClient : NSObject
 - (NSString*)accessToken;
 @end
@@ -49,6 +54,36 @@
 - (void) showInView:(UIView *)view;
 @end
 
+
+static void handleSaveOriginalMessageIfEdited(id arg1)
+{
+	NSLog(@"** handleMessage: %@", arg1);
+	if(arg1) {
+		if(arg1[@"message"]!=nil && arg1[@"previous_message"]!=nil && arg1[@"previous_message"][@"edited"]==nil) {
+			NSString* channelId = arg1[@"channel"];
+			NSString* timestamp = arg1[@"previous_message"][@"ts"];
+			NSString* textOriginal = arg1[@"previous_message"][@"text"];
+			[[NSUserDefaults standardUserDefaults] setObject:textOriginal forKey:[NSString stringWithFormat:@"%@_%@", channelId, timestamp] inDomain:@"com.julioverne.slackhistory"];
+		}
+	}
+}
+
+%hook SLKWebSocketClient
+- (void)handleMessageType:(id)arg1
+{
+	handleSaveOriginalMessageIfEdited(arg1);
+	%orig;
+}
+%end
+%hook SLKDataParser
+- (id)updateMessageChanged:(NSDictionary*)arg1
+{
+	handleSaveOriginalMessageIfEdited(arg1);
+	return %orig;
+}
+%end
+
+
 %hook SMUMessageCellView
 %new
 - (void)handlePressHistory
@@ -70,6 +105,15 @@
 	
 	@try {
 		
+		NSDateFormatter *_formatter=[[NSDateFormatter alloc]init];
+		[_formatter setDateFormat:@"MM/dd/yy hh:mm:ss"];
+		
+		NSString* originalMessage = [[NSUserDefaults standardUserDefaults] objectForKey:[NSString stringWithFormat:@"%@_%@", channelId, timestamp] inDomain:@"com.julioverne.slackhistory"];
+		if(originalMessage) {
+			textHistory = [textHistory?:@"" stringByAppendingFormat:@"\n⌚[%@]:\n%@\n", [_formatter stringFromDate:[NSDate dateWithTimeIntervalSince1970:[timestamp?:@"" doubleValue]]], originalMessage];
+		}
+		
+		
 		NSError *error = nil;
 				NSHTTPURLResponse *responseCode = nil;
 				NSMutableURLRequest *Request = [[NSMutableURLRequest alloc]	initWithURL:[NSURL URLWithString:@"https://slack.com/api/eventlog.history"] cachePolicy:NSURLRequestReloadIgnoringLocalAndRemoteCacheData timeoutInterval:15.0];
@@ -84,8 +128,7 @@
 				if(receivedData && !error) {
 					NSDictionary *JSON = [NSJSONSerialization JSONObjectWithData:receivedData?:[NSData data] options:NSJSONReadingMutableContainers error:nil];
 					@try {
-						NSDateFormatter *_formatter=[[NSDateFormatter alloc]init];
-						[_formatter setDateFormat:@"MM/dd/yy hh:mm:ss"];
+						
 						
 						if(NSArray* events = JSON[@"events"]) {
 							for(NSDictionary* eventNow in events) {
